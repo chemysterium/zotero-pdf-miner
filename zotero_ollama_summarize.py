@@ -16,6 +16,8 @@ Usage:
     python zotero_ollama_summarize.py --collection "Thesis Reading"
     python zotero_ollama_summarize.py --collection WXYZ9876 --force
     python zotero_ollama_summarize.py --collection "Thesis Reading" --dry-run
+    python zotero_ollama_summarize.py --all
+    python zotero_ollama_summarize.py --all --max-minutes 60
 """
 
 import argparse
@@ -24,6 +26,7 @@ import html
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import markdown
@@ -120,15 +123,21 @@ def resolve_collection(zot: zotero.Zotero, query: str) -> str:
     return matches[0]["key"]
 
 
+def _papers_from_items(items: list[dict]) -> list[dict]:
+    return [
+        {"key": it["key"], "title": it["data"].get("title", "Untitled")}
+        for it in items
+        if it["data"].get("itemType") not in ("attachment", "note")
+    ]
+
+
 def get_collection_papers(zot: zotero.Zotero, collection_key: str) -> list[dict]:
-    items = zot.everything(zot.collection_items_top(collection_key))
-    papers = []
-    for it in items:
-        data = it["data"]
-        if data.get("itemType") in ("attachment", "note"):
-            continue
-        papers.append({"key": it["key"], "title": data.get("title", "Untitled")})
-    return papers
+    return _papers_from_items(zot.everything(zot.collection_items_top(collection_key)))
+
+
+def get_all_papers(zot: zotero.Zotero) -> list[dict]:
+    """Every top-level paper in the library: all collections plus loose items."""
+    return _papers_from_items(zot.everything(zot.top()))
 
 
 def _summary_has_body(note_html: str) -> bool:
@@ -156,6 +165,23 @@ def has_existing_summary(zot: zotero.Zotero, parent_key: str) -> bool:
         _summary_has_body(note["data"].get("note", ""))
         for note in find_summary_notes(zot, parent_key)
     )
+
+
+def get_summarized_keys(zot: zotero.Zotero) -> set[str]:
+    """Keys of all items that already have a non-blank AI Summary note.
+
+    One paginated pass over the library's notes, instead of a children()
+    request per paper: scanning the whole library would otherwise cost
+    thousands of requests before any summarizing starts.
+    """
+    keys = set()
+    for note in zot.everything(zot.items(itemType="note")):
+        data = note["data"]
+        parent = data.get("parentItem")
+        note_html = data.get("note", "")
+        if parent and SUMMARY_MARKER in note_html and _summary_has_body(note_html):
+            keys.add(parent)
+    return keys
 
 
 def delete_summary_notes(zot: zotero.Zotero, notes: list[dict], label: str) -> None:
@@ -408,6 +434,64 @@ def process_item(zot: zotero.Zotero, key: str, title: str, replace: bool = False
         delete_blank_summary_notes(zot, key)
 
 
+def process_papers(
+    zot: zotero.Zotero,
+    papers: list[dict],
+    force: bool = False,
+    dry_run: bool = False,
+    max_minutes: float | None = None,
+) -> None:
+    """Summarize a batch of papers, skipping ones already summarized.
+
+    max_minutes is a budget for starting new papers, not a hard timeout: a
+    summary already under way is always allowed to finish and be saved.
+    """
+    # Prefetched in one pass; --force re-summarizes regardless, so skip the scan.
+    summarized = set() if force else get_summarized_keys(zot)
+    deadline = time.monotonic() + max_minutes * 60 if max_minutes else None
+
+    processed = skipped = failed = 0
+    ran_out_of_time = False
+
+    for i, paper in enumerate(papers, 1):
+        if deadline is not None and time.monotonic() >= deadline:
+            remaining = len(papers) - i + 1
+            print(
+                f"Time limit of {max_minutes:g} min reached — stopping with "
+                f"{remaining} paper(s) unvisited."
+            )
+            ran_out_of_time = True
+            break
+
+        print(f"[{i}/{len(papers)}] {paper['title']} ({paper['key']})")
+        if paper["key"] in summarized:
+            print("  already summarized, skipping (use --force to redo)")
+            skipped += 1
+            continue
+
+        if dry_run:
+            try:
+                attachment = find_pdf_attachment(zot, paper["key"])
+                print(f"  would summarize (PDF attachment {attachment['key']} found)")
+                processed += 1
+            except ProcessingError as exc:
+                print(f"  would fail: {exc}")
+                failed += 1
+            continue
+
+        try:
+            process_item(zot, paper["key"], paper["title"], replace=force)
+            processed += 1
+        except Exception as exc:
+            print(f"  ERROR: {exc}")
+            failed += 1
+
+    verb = "would summarize" if dry_run else "summarized"
+    print(f"Done. {processed} {verb}, {skipped} skipped, {failed} failed.")
+    if ran_out_of_time:
+        print("Rerun the same command to continue where this left off.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -415,6 +499,16 @@ def main() -> None:
     )
     parser.add_argument(
         "--collection", "-c", help="Collection name or key: summarize every paper in it"
+    )
+    parser.add_argument(
+        "--all", "-a", action="store_true",
+        help="Summarize every not-yet-summarized paper in the library (all "
+        "collections, plus items in no collection)",
+    )
+    parser.add_argument(
+        "--max-minutes", "-m", type=float, metavar="N",
+        help="Stop starting new papers after N minutes (a summary already in "
+        "progress still finishes). Rerun to continue where it left off.",
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -428,43 +522,30 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if bool(args.item) == bool(args.collection):
-        parser.error("provide exactly one of: item, or --collection")
+    if sum(bool(x) for x in (args.item, args.collection, args.all)) != 1:
+        parser.error("provide exactly one of: item, --collection, or --all")
+    if args.max_minutes is not None and args.max_minutes <= 0:
+        parser.error("--max-minutes must be greater than 0")
 
     zot = build_client()
 
-    if args.collection:
-        collection_key = resolve_collection(zot, args.collection)
-        papers = get_collection_papers(zot, collection_key)
-        print(f"Found {len(papers)} papers in collection {collection_key}.")
+    if args.collection or args.all:
+        if args.all:
+            print("Listing every paper in the library...")
+            papers = get_all_papers(zot)
+            print(f"Found {len(papers)} papers in the library.")
+        else:
+            collection_key = resolve_collection(zot, args.collection)
+            papers = get_collection_papers(zot, collection_key)
+            print(f"Found {len(papers)} papers in collection {collection_key}.")
 
-        processed = skipped = failed = 0
-        for i, paper in enumerate(papers, 1):
-            print(f"[{i}/{len(papers)}] {paper['title']} ({paper['key']})")
-            if not args.force and has_existing_summary(zot, paper["key"]):
-                print("  already summarized, skipping (use --force to redo)")
-                skipped += 1
-                continue
-
-            if args.dry_run:
-                try:
-                    attachment = find_pdf_attachment(zot, paper["key"])
-                    print(f"  would summarize (PDF attachment {attachment['key']} found)")
-                    processed += 1
-                except ProcessingError as exc:
-                    print(f"  would fail: {exc}")
-                    failed += 1
-                continue
-
-            try:
-                process_item(zot, paper["key"], paper["title"], replace=args.force)
-                processed += 1
-            except Exception as exc:
-                print(f"  ERROR: {exc}")
-                failed += 1
-
-        verb = "would summarize" if args.dry_run else "summarized"
-        print(f"Done. {processed} {verb}, {skipped} skipped, {failed} failed.")
+        process_papers(
+            zot,
+            papers,
+            force=args.force,
+            dry_run=args.dry_run,
+            max_minutes=args.max_minutes,
+        )
     else:
         print(f"Resolving item: {args.item}")
         item = resolve_item(zot, args.item)

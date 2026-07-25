@@ -55,15 +55,36 @@ python zotero_ollama_summarize.py --collection "Thesis Reading"
 python zotero_ollama_summarize.py --collection WXYZ9876
 ```
 
+Work through the whole library — every collection, plus items in no collection —
+summarizing only what has no summary yet:
+
+```
+python zotero_ollama_summarize.py --all
+```
+
+For a large library that takes many hours, so you can cap how long it runs and
+pick up later. This works on it for an hour, then stops:
+
+```
+python zotero_ollama_summarize.py --all --max-minutes 60
+```
+
 Options:
 
 | Flag | Effect |
 | --- | --- |
+| `--all`, `-a` | Process every paper in the library, not just one item or collection |
+| `--max-minutes N`, `-m N` | Stop starting new papers after N minutes |
 | `--force` | Re-summarize items that already have an AI Summary note, replacing the old note (the old note is deleted only after the new summary is saved, so a failed run never loses an existing summary) |
 | `--dry-run` | Show what would be processed, without calling Ollama or writing to Zotero |
 
 Papers that already have a note starting with `AI Summary:` are skipped, so you
-can rerun the collection command whenever you add new papers.
+can rerun any of these commands whenever you add new papers — and rerunning
+after `--max-minutes` cut a run short simply continues where it left off.
+
+`--max-minutes` is a budget for *starting* papers, not a hard timeout: a summary
+already under way always finishes and is saved, so a long paper can overshoot
+the limit rather than being abandoned half-done.
 
 ## How it works
 
