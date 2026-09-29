@@ -1,121 +1,169 @@
-# Zotero → Ollama Summarizer
+# Zotero PDF Miner
 
-Summarize the PDF fulltext of papers in your [Zotero](https://www.zotero.org/)
-library with a local LLM served by [Ollama](https://ollama.com/), and save each
-summary back into Zotero as a child note attached to the paper.
+Extract the text of the PDFs in your [Zotero](https://www.zotero.org/) library
+into Markdown files — one `.md` per paper — keeping the formatting that
+scientific papers depend on:
 
-- Works on a single item or a whole collection
-- Skips papers that already have a summary note (rerun-friendly)
-- Long papers are summarized chunk-by-chunk, then combined (map-reduce)
-- Everything runs locally except the Zotero Web API calls — the paper text
-  never leaves your machine
+| In the PDF | Plain extraction gives | Zotero PDF Miner writes |
+| --- | --- | --- |
+| chemical formulas | `CaSO4`, `Na2SO4` | `CaSO₄`, `Na₂SO₄` |
+| ions, charges | `Ca<sup>2+</sup> ,` / `SO42−` | `Ca²⁺,` |
+| powers of ten | `8.102× 10<sup>−3 </sup>` | `8.102 × 10⁻³` |
+| units | `mmol kg<sup>−1</sup>`, `0.45 µm` | `mmol kg⁻¹`, `0.45 μm` |
+| temperatures, angles | `288<sup>◦</sup> C`, `5<sup>◦</sup> –80<sup>◦</sup>` | `288°C`, `5°–80°` |
+| TeX-accented names | `Sipila¨`, `Ferreiros´`, `Jelı´nek` | `Sipilä`, `Ferreirós`, `Jelínek` |
+| Advent-font symbols (Elsevier, Springer, T&F) | `mg=L`, `pH ¼ 5.5`, `Fe3þ`, `22 �C`, `[13e15]` | `mg/L`, `pH = 5.5`, `Fe³⁺`, `22 °C`, `[13–15]` |
+| Pi/Symbol-font Greek | `10 lm`, `h ¼ 44%`, `10 mg` | `10 μm`, `η = 44%`, `10 μg` |
+| spaced headings | `H I G H L I G H T S` | `HIGHLIGHTS` |
+
+Each file starts with YAML front matter (title, authors, year, journal, DOI,
+Zotero key and a `zotero://` link back to the item), so the output drops
+straight into Obsidian, a static site, or an LLM/RAG pipeline.
+
+It is a spin-off of
+[zotero-ollama-summarizer](https://github.com/chemysterium/zotero-ollama-summarizer):
+the same Zotero plumbing and the same Markdown clean-up ideas, but it produces
+the full text instead of a summary, needs no LLM, and never writes to Zotero.
 
 ## Requirements
 
 - Python 3.10+
-- A [Zotero account](https://www.zotero.org/) with your library synced
-- [Ollama](https://ollama.com/) running locally with a model pulled
-  (e.g. `ollama pull gemma4:26b-a4b-it-q4_K_M`)
+- Zotero 7 with your PDFs synced to this computer
+- Either Zotero running with the local API enabled (Settings → Advanced →
+  *Allow other applications on this computer to communicate with Zotero*),
+  or a Zotero web API key
 
 ## Setup
 
-1. Install dependencies:
+```
+pip install -r requirements.txt
+```
 
-   ```
-   pip install -r requirements.txt
-   ```
+With Zotero running, that is all — use `--local`. To use the web API instead,
+copy `config.example.ini` to `config.ini` and fill in `zotero_library_id` and
+`zotero_api_key` from <https://www.zotero.org/settings/keys> (read access is
+enough). Every setting can also be given as an environment variable of the same
+name in upper case (`ZOTERO_API_KEY`, `OUTPUT_DIR`, ...).
 
-2. Create your config:
-
-   ```
-   cp config.example.ini config.ini
-   ```
-
-   Fill in `zotero_library_id` and `zotero_api_key` — both from
-   <https://www.zotero.org/settings/keys> (the key needs read/write access).
-   `config.ini` is gitignored, so your credentials stay out of the repository.
-
-   Every setting can also be provided as an environment variable with the same
-   name uppercased (e.g. `ZOTERO_API_KEY`), which takes precedence over
-   `config.ini`.
+The PDFs themselves are always read from local storage (`~/Zotero/storage` by
+default; set `zotero_storage_dir` if yours is elsewhere).
 
 ## Usage
 
-Summarize a single paper by its Zotero item key, or by a title search:
+A whole collection (by name or key), into `markdown/<collection name>/`:
 
 ```
-python zotero_ollama_summarize.py ABCD1234
-python zotero_ollama_summarize.py "partial title of the paper"
+python zotero_pdf_miner.py --local --collection "Isotope separation"
 ```
 
-Summarize every paper in a collection (by name or collection key):
+Including subcollections, into a folder of your choice:
 
 ```
-python zotero_ollama_summarize.py --collection "Thesis Reading"
-python zotero_ollama_summarize.py --collection WXYZ9876
+python zotero_pdf_miner.py --local -c "Thesis Reading" --recursive -o notes/
 ```
 
-Work through the whole library — every collection, plus items in no collection —
-summarizing only what has no summary yet:
+One paper, by item key or title search:
 
 ```
-python zotero_ollama_summarize.py --all
+python zotero_pdf_miner.py --local ABCD1234
+python zotero_pdf_miner.py --local "partial title of the paper"
 ```
 
-For a large library that takes many hours, so you can cap how long it runs and
-pick up later. This works on it for an hour, then stops:
+The whole library, an hour at a time:
 
 ```
-python zotero_ollama_summarize.py --all --max-minutes 60
+python zotero_pdf_miner.py --local --all --max-minutes 60
 ```
 
-Options:
+A PDF that isn't in Zotero:
+
+```
+python zotero_pdf_miner.py --pdf paper.pdf
+```
+
+Files are named `<title> (<item key>).md`. Papers that already have a file are
+skipped, so rerunning a command only picks up what is new — or what an
+interrupted run didn't reach.
 
 | Flag | Effect |
 | --- | --- |
-| `--all`, `-a` | Process every paper in the library, not just one item or collection |
+| `--collection`, `-c` | Extract every paper in a collection |
+| `--recursive`, `-r` | With `--collection`, include subcollections |
+| `--all`, `-a` | Extract every paper in the library |
+| `--pdf FILE` | Convert one PDF file, without Zotero |
+| `--local`, `-l` | Use the running Zotero's local API (no API key needed) |
+| `--output-dir`, `-o` | Output folder (default `markdown/`, plus the collection name) |
+| `--force` | Overwrite existing `.md` files |
+| `--dry-run` | Show what would be extracted |
 | `--max-minutes N`, `-m N` | Stop starting new papers after N minutes |
-| `--force` | Re-summarize items that already have an AI Summary note, replacing the old note (the old note is deleted only after the new summary is saved, so a failed run never loses an existing summary) |
-| `--dry-run` | Show what would be processed, without calling Ollama or writing to Zotero |
+| `--scripts unicode\|html` | Sub/superscripts as Unicode (`10⁻³`, falling back to `<sup>` where Unicode has no glyph) or always as `<sub>`/`<sup>` |
+| `--keep-figure-text` | Keep text found inside figures (axis labels, legends) |
+| `--page-separators` | Mark page boundaries with `<!-- page N -->` |
+| `--no-front-matter` | Leave out the YAML bibliographic block |
 
-Papers that already have a note starting with `AI Summary:` are skipped, so you
-can rerun any of these commands whenever you add new papers — and rerunning
-after `--max-minutes` cut a run short simply continues where it left off.
-
-`--max-minutes` is a budget for *starting* papers, not a hard timeout: a summary
-already under way always finishes and is saved, so a long paper can overshoot
-the limit rather than being abandoned half-done.
+Scanned PDFs that were OCR-ed carry their text as an invisible layer, which
+pymupdf4llm ignores; those pages are read from the layer directly (as plain
+paragraphs — OCR has no sub/superscripts to keep), and the run says so.
+Scanned PDFs without such a layer have no text to extract. The miner says so, naming the pages
+without a text layer; OCR them first (for example with `ocrmypdf`, or with
+[sum-ocr-mark](https://github.com/chemysterium/sum-ocr-mark)) and rerun with `--force`.
 
 ## How it works
 
-1. Finds the item's PDF attachment via the Zotero Web API
-2. Gets the fulltext from Zotero's server-side index, falling back to
-   extracting it from the local PDF as structure-aware Markdown (via
-   [pymupdf4llm](https://pypi.org/project/pymupdf4llm/)) if the index is empty
-3. Sends the text to Ollama for summarization — long papers are split into
-   overlapping chunks, summarized separately, then combined into one summary
-4. Creates a child note (`AI Summary: <title>`) on the Zotero item
+Three passes per PDF:
 
-## Notes
+1. **Pre-pass** (`pdf_hints.py`) reads the PDF's glyphs directly with PyMuPDF:
+   font size and baseline of every span (a smaller span below the baseline
+   is a subscript, above it a superscript), the font each glyph comes from
+   (Symbol and Advent fonts encode Greek letters and math symbols as
+   unrelated characters), and where accent glyphs are drawn (an accent sits
+   over the letter it belongs to, whatever order the text stream lists them
+   in). From this it builds a list of small, anchored edits per page —
+   "`CaSO` + `4` → `CaSO<sub>4</sub>`" — and a table of correctly accented words.
+2. **Extraction** with [pymupdf4llm](https://pypi.org/project/pymupdf4llm/),
+   page by page, which gets the structure right: headings, paragraphs,
+   lists, tables, reading order across columns; running headers and
+   footers are dropped.
+3. **Post-pass** applies the pre-pass edits to each page's Markdown (each
+   one searched for near where the previous one matched, so a fragment is
+   fixed where it occurs), then `sciformat.py` normalises what's left:
+   sub/superscripts to Unicode, degree signs, isotopes (`⁶Li`), `× 10ⁿ`,
+   ligatures, µ → μ, spacing around scripts and punctuation, compound-word
+   hyphens lost to line-end dehyphenation, and figure-internal text.
 
-- If your Zotero library uses WebDAV storage (e.g. Koofr), file attachments
-  can't be uploaded through the Web API — that's why summaries are saved as
-  notes rather than `.txt` attachments.
-- The Ollama request disables extended "thinking" so reasoning-capable models
-  don't spend their whole output budget on hidden reasoning tokens.
-- Markdown extraction was chosen over plain-text extraction after a side-by-side
-  comparison: plain text mangled unicode (units, superscripts) and lost some
-  content the markdown extraction preserved (see `compare_extraction.py`).
+`python -m unittest -v` runs the tests for the text rules.
 
-## Comparing extraction methods
+### Fonts without a Unicode mapping
 
-`compare_extraction.py` is a read-only tool (no writes to Zotero) that extracts
-one paper both ways — plain text and Markdown — summarizes each with the same
-Ollama model, and saves both for comparison:
+About a third of the PDFs in a typical chemistry/engineering library are
+typeset with *Advent* fonts (Elsevier, Springer, Taylor & Francis, Wiley):
+math and symbol fonts embedded under hashed names such as `AdvP4C4E74`, with no
+information on what their glyphs mean. Plain extraction then gives `mg=L`,
+`pH ¼ 5.5`, `Fe3þ`, `22 �C`, `10 lm` for mg/L, pH = 5.5, Fe³⁺, 22 °C, 10 μm.
+The character *codes* in these fonts change from paper to paper, so a fixed
+lookup table doesn't work. `advent.py` decodes them from what does stay put:
 
-```
-python compare_extraction.py ABCD1234
-```
+- **TeX-derived fonts** (`AdvP4C4E74` = cmsy, `AdvP4C4E51` = cmmi,
+  `AdvP4C4E59` = cmr, `AdvP4C4E46` = cmex, their MathTime cousins, and genuine
+  `CMSY10`/`CMEX10`/... without a mapping): each glyph's name in the PDF's
+  `/Differences` array (`C14`) or its code gives its position in the TeX font,
+  and that position fixes the character (cmsy 14 is the degree ring).
+- **Named glyphs**: `uniXXXX`, TeX delimiter names (`parenleftBig`), and
+  Linotype Mathematical Pi names (`H9262` is μ, `H11005` is =).
+- **Pi fonts** (`AdvPi1`, `AdvPSMP13`, `AdvGreekM`, ...) whose glyph names say
+  nothing (`m`): per-font tables, read off rendered glyphs from the papers
+  in which each font occurs.
 
-Output goes to `comparisons/<item-key>_plain.txt` and `_markdown.txt` (plus the
-raw extracted text/markdown for inspection).
+Accents drawn by these fonts are composed with the letter they sit on
+(`Ro_zej` → Rożej, `Hrub�y` → Hrubý).
+
+## Limitations
+
+- Display equations come through only as well as pymupdf4llm reads them —
+  inline chemistry and units are handled, typeset integrals and fractions
+  are not rebuilt.
+- A superscript stacked over a subscript (`SO₄²⁻`) is sometimes split onto a
+  separate line by the extraction, and ends up detached (`SO₄ ... 2−`).
+- Unmapped glyphs the pre-pass cannot place are guessed from context, or left
+  as `�` where there is no safe guess. Rare Pi fonts (a few papers each) are
+  not in the tables yet; their Greek letters stay Latin (`m` for μ).

@@ -1,7 +1,7 @@
 pyzotero>=1.13
-requests>=2.31
-markdown>=3.5
 pymupdf4llm>=1.28
-# Pulled in transitively by pymupdf4llm, but also imported directly by
-# compare_extraction.py for the plain-text baseline.
-pymupdf>=1.24
+# pymupdf4llm pins its matching PyMuPDF version; pdf_hints.py uses it directly.
+pymupdf>=1.28
+# Optional: reads glyph names stored inside embedded CFF Pi fonts, so their
+# symbols (©, °, ′, Greek) decode even when the PDF itself doesn't name them.
+fonttools>=4.40
