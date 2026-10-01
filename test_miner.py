@@ -5,6 +5,7 @@ import io
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -92,6 +93,26 @@ class AttachmentPathTests(unittest.TestCase):
 
 
 class PaginationTests(unittest.TestCase):
+    def test_title_search_considers_later_pages_before_selecting(self):
+        zot = Mock()
+        first = {"key": "FIRST001", "data": {"itemType": "journalArticle", "title": "Same title"}}
+        later = {"key": "SECOND02", "data": {"itemType": "journalArticle", "title": "Same title"}}
+        zot.items.return_value = [first]
+        zot.everything.return_value = [first, later]
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            miner.resolve_item(zot, "Same title")
+        self.assertEqual(raised.exception.code, 1)
+        zot.everything.assert_called_once_with([first])
+
+    def test_title_search_ignores_notes_and_annotations(self):
+        zot = Mock()
+        zot.everything.return_value = [
+            {"key": "NOTE0001", "data": {"itemType": "note"}},
+            {"key": "ANNOT001", "data": {"itemType": "annotation"}},
+            {"key": "PAPER001", "data": {"itemType": "journalArticle", "title": "Title"}},
+        ]
+        self.assertEqual(miner.resolve_item(zot, "Title")["key"], "PAPER001")
+
     def test_pdf_found_on_later_attachment_page(self):
         zot = Mock()
         first_page = [{"data": {"itemType": "note"}}]
@@ -155,7 +176,38 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(self.run_batch([miner.ProcessingError("no PDF"), {}], None), (0, 1))
 
 
+class MetadataTests(unittest.TestCase):
+    def test_personal_library_link(self):
+        with patch.object(miner, "ZOTERO_LIBRARY_TYPE", "user"):
+            metadata = miner.front_matter({"key": "PAPER001"}, Path("paper.pdf"), 2)
+        self.assertIn("zotero://select/library/items/PAPER001", metadata)
+
+    def test_group_library_link_uses_group_id(self):
+        with patch.object(miner, "ZOTERO_LIBRARY_TYPE", "group"), \
+                patch.object(miner, "ZOTERO_LIBRARY_ID", "12345"):
+            metadata = miner.front_matter({"key": "PAPER001"}, Path("paper.pdf"), 2)
+        self.assertIn("zotero://select/groups/12345/items/PAPER001", metadata)
+        self.assertNotIn("select/library/", metadata)
+
+    def test_standalone_pdf_has_no_zotero_link(self):
+        self.assertNotIn("zotero_link:", miner.front_matter({"title": "Paper"}, Path("paper.pdf"), 2))
+
+    def test_missing_group_id_does_not_make_a_misleading_personal_link(self):
+        with patch.object(miner, "ZOTERO_LIBRARY_TYPE", "group"), \
+                patch.object(miner, "ZOTERO_LIBRARY_ID", ""):
+            self.assertIsNone(miner.zotero_select_link({"key": "PAPER001"}))
+
+
 class FormattingPipelineTests(unittest.TestCase):
+    def test_guessed_charge_obeys_html_script_mode(self):
+        self.assertEqual(sciformat.postprocess("Cl<sup>\ufffd</sup>", scripts="html",
+                                              guess_glyphs=True),
+                         "Cl<sup>\u2212</sup>\n")
+
+    def test_postprocess_defaults_preserve_unknown_glyphs(self):
+        source = "Cl<sup>\ufffd</sup>"
+        self.assertEqual(sciformat.postprocess(source), source + "\n")
+
     def test_generated_exponent_obeys_script_mode(self):
         source = "1.5 x 10\u22123 M"
         self.assertEqual(sciformat.postprocess(source, scripts="html"),
@@ -177,6 +229,43 @@ class FormattingPipelineTests(unittest.TestCase):
 
 
 class ExtractionTests(unittest.TestCase):
+    def test_unknown_control_and_private_glyphs_are_visible_and_counted(self):
+        import pymupdf
+        import pymupdf4llm
+        import pdf_hints
+
+        document = pymupdf.open()
+        document.new_page()
+        text = "Scientific text " * 20 + " bad \x01 \x7f \ue123 \U000f0001 \U00100001\n\tgood"
+        with patch.object(pymupdf, "open", return_value=document), \
+                patch.object(pymupdf4llm, "to_markdown", return_value=[{"text": text}]), \
+                patch.object(pdf_hints, "collect_hints", return_value=pdf_hints.PdfHints()):
+            result = extract.pdf_to_markdown(Path("memory.pdf"))
+        self.assertEqual(result.unresolved_glyphs, 5)
+        self.assertIn("\n\tgood", result.markdown)
+        self.assertNotIn("\x01", result.markdown)
+        self.assertNotIn("\ue123", result.markdown)
+
+    def test_font_fallback_does_not_replace_real_fraction_by_default(self):
+        import pymupdf
+        import pymupdf4llm
+        import pdf_hints
+
+        document = pymupdf.open()
+        document.new_page()
+        text = "Scientific text " * 20 + " pH \u00bc 7; a real fraction \u00bc."
+        hints = pdf_hints.PdfHints(
+            glyph_edits={0: [pdf_hints.Edit("pH ", "\u00bc", " 7", "=")]},
+            residual={"\u00bc": Counter({"=": 1})},
+        )
+        with patch.object(pymupdf, "open", return_value=document), \
+                patch.object(pymupdf4llm, "to_markdown",
+                             return_value=[{"metadata": {"page_number": 1}, "text": text}]), \
+                patch.object(pdf_hints, "collect_hints", return_value=hints):
+            result = extract.pdf_to_markdown(Path("memory.pdf"))
+        self.assertIn("pH = 7", result.markdown)
+        self.assertIn("a real fraction \u00bc", result.markdown)
+
     def test_real_pdf_cli_export_and_nonwriting_dry_run(self):
         import pymupdf
 

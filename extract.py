@@ -24,6 +24,13 @@ MIN_USEFUL_CHARS = 200
 # lost its text in conversion.
 MIN_PAGE_MD_CHARS = 80
 
+# Leftovers from unmapped font encodings must be visible, not invisible
+# control codes or private-use characters with an undefined meaning.
+_UNKNOWN_GLYPH = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ue000-\uf8ff"
+    r"\U000f0000-\U000ffffd\U00100000-\U0010fffd]"
+)
+
 
 class ExtractionError(Exception):
     """The PDF could not be turned into useful text."""
@@ -82,7 +89,9 @@ def pdf_to_markdown(
             and len(doc[number].get_text().strip()) >= MIN_PAGE_MD_CHARS
         }
 
-    residual = hints.residual_map()
+    # A decoded math-font character may also occur literally in body text
+    # (e.g. a real quarter fraction). Unanchored replacements are guesses.
+    residual = hints.residual_map() if guess_glyphs else {}
     pages_md = []
     applied = 0
     for number, chunk in _numbered(chunks):
@@ -92,6 +101,7 @@ def pdf_to_markdown(
         applied += glyphs + placed
         for ch, decoded in residual.items():
             text = text.replace(ch, decoded)
+        text = _UNKNOWN_GLYPH.sub("\ufffd", text)
         if page_separators:
             text = f"<!-- page {number + 1} -->\n\n{text}"
         pages_md.append(text)

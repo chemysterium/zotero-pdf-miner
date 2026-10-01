@@ -4,6 +4,7 @@ Run with:  python -m unittest -v
 """
 
 import unittest
+from unittest.mock import Mock, patch
 
 import advent
 import pdf_hints
@@ -121,7 +122,8 @@ class UnmappedGlyphTests(unittest.TestCase):
         self.assertEqual(sciformat.fix_unmapped_glyphs("s [m<sup>�3</sup>]"), "s [m<sup>−3</sup>]")
 
     def test_fallback_guess(self):
-        text = sciformat.postprocess("h<sup>�1</sup> " + "x" * 300, fffd_guess="−")
+        text = sciformat.postprocess("h<sup>�1</sup> " + "x" * 300,
+                                    fffd_guess="−", guess_glyphs=True)
         self.assertTrue(text.startswith("h⁻¹"))
 
 
@@ -192,6 +194,19 @@ class AdventTests(unittest.TestCase):
         self.assertEqual(advent._family_char("cmmi", 61, None), "/")
         self.assertEqual(advent._family_char("cmr", 95, None), "˙")
         self.assertEqual(advent._family_char("symbol", 3, "C176"), "°")
+
+    def test_old_elsevier_charge_range_and_equals_glyphs(self):
+        # A second encoding moves the same glyph names to different bytes.
+        for offset in (0, 64):
+            with self.subTest(offset=offset), \
+                    patch.object(advent, "_differences", return_value={
+                        1 + offset: "C28", 2 + offset: "C27",
+                        3 + offset: "C1", 4 + offset: "C30",
+                    }):
+                table = advent.PageDecoder._build(Mock(), 1, None, {}, font="AdvBMa1")
+                self.assertEqual(table, {chr(1 + offset): "−", chr(2 + offset): "+",
+                                         chr(3 + offset): "–", chr(4 + offset): "="})
+                self.assertEqual(advent.PageDecoder._build(Mock(), 1, None, {}, font="OtherFont"), {})
 
     def test_glyph_names(self):
         self.assertEqual(advent._name_char("H9262"), "μ")

@@ -189,6 +189,12 @@ PI_FONTS: dict[str, dict[str, str]] = {
     "AdvGRTU": _pairs("map", "μαπ"),
 }
 
+# Verified from ionic charges, ranges and pK equations in an older Elsevier
+# article. Match glyph names, not byte positions: PDFs can re-encode a font.
+FONT_GLYPH_NAMES = {
+    "AdvBMa1": {"C28": "−", "C27": "+", "C1": "–", "C30": "="},
+}
+
 _CNAME = re.compile(r"^C(\d{1,3})$")
 _UNINAME = re.compile(r"^uni([0-9A-Fa-f]{4})$")
 # TeX's names for sized delimiters and big operators ("parenleftBig",
@@ -314,7 +320,7 @@ class PageDecoder:
             if name in self.tables:
                 continue
             family = family_of(name)
-            table = self._build(doc, xref, family, cache)
+            table = self._build(doc, xref, family, cache, font=name)
             if table:
                 # A font with a Unicode mapping is trusted except where it
                 # plainly failed; Advent's own mappings are identity maps
@@ -326,22 +332,28 @@ class PageDecoder:
                 self.tables[name] = (table, has_map and family is None)
 
     @staticmethod
-    def _build(doc, xref: int, family: str | None, cache: dict) -> dict[str, str]:
+    def _build(
+        doc, xref: int, family: str | None, cache: dict, font: str | None = None
+    ) -> dict[str, str]:
         if xref in cache:
             return cache[xref]
         table: dict[str, str] = {}
+        known_names = FONT_GLYPH_NAMES.get(font, {})
         names = _differences(doc, xref)
         if not names and not family:
             # Only names that say something are used from the font program
             # (Pi "H" names, uniXXXX); standard ones pymupdf already knows.
-            names = {c: n for c, n in _builtin_names(doc, xref).items() if _name_char(n) is not None}
+            names = {c: n for c, n in _builtin_names(doc, xref).items()
+                     if _name_char(n) is not None or n in known_names}
         # What pymupdf reports for a code: the glyph name's character when
         # the name is a standard one, else the raw code.
         for code, name in names.items():
             uni = pymupdf.glyph_name_to_unicode(name)  # U+FFFD if unknown
             standard = bool(uni) and uni not in (0, 0xFFFD)
             extracted = chr(uni) if standard else chr(code)
-            decoded = None if standard and not family else _name_char(name)
+            decoded = known_names.get(name)
+            if decoded is None:
+                decoded = None if standard and not family else _name_char(name)
             if decoded is None and family:
                 decoded = _family_char(family, code, name)
             if decoded is not None:

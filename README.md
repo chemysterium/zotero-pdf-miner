@@ -143,11 +143,19 @@ not its storage folder. Set `zotero_linked_attachment_base_dir` in `config.ini`
 (or `ZOTERO_LINKED_ATTACHMENT_BASE_DIR`) or pass `--linked-attachment-base-dir`.
 
 Exports warn when unresolved replacement characters remain, including their count.
+Unresolved control codes and private-use glyphs are made visible as `�` too,
+instead of leaving invisible damage in the Markdown.
 Heuristic symbol guesses are disabled by default; use `--guess-glyphs` to enable
-them and check the result against the PDF. Font and glyph-position based repairs
-remain enabled. Batch runs return exit code 1 when extraction or attachment
-lookup fails; items without PDF attachments are ordinary skips in batch runs.
+them and check the result against the PDF. This also enables unanchored,
+document-wide replacements inferred from math fonts; without it, a real `¼`
+elsewhere in the text is preserved even if a math font uses that character for `=`.
+Font and glyph-position based repairs remain enabled. Batch runs return exit
+code 1 when extraction or attachment lookup fails; items without PDF attachments
+are ordinary skips in batch runs.
 An explicitly requested single Zotero item without a PDF returns exit code 1.
+Title searches check every result page before deciding whether a match is unique.
+Group-library exports use a `zotero://select/groups/<group ID>/items/<key>` link
+instead of pointing to the personal library.
 
 ### Fonts without a Unicode mapping
 
@@ -165,7 +173,9 @@ lookup table doesn't work. `advent.py` decodes them from what does stay put:
   `/Differences` array (`C14`) or its code gives its position in the TeX font,
   and that position fixes the character (cmsy 14 is the degree ring).
 - **Named glyphs**: `uniXXXX`, TeX delimiter names (`parenleftBig`), and
-  Linotype Mathematical Pi names (`H9262` is μ, `H11005` is =).
+  Linotype Mathematical Pi names (`H9262` is μ, `H11005` is =). The older
+  `AdvBMa1` font is decoded using its glyph names for charges, ranges and `=`;
+  changing their byte positions does not change their meaning.
 - **Pi fonts** (`AdvPi1`, `AdvPSMP13`, `AdvGreekM`, ...) whose glyph names say
   nothing (`m`): per-font tables, read off rendered glyphs from the papers
   in which each font occurs.
@@ -177,7 +187,9 @@ Accents drawn by these fonts are composed with the letter they sit on
 
 - Display equations come through only as well as pymupdf4llm reads them —
   inline chemistry and units are handled, typeset integrals and fractions
-  are not rebuilt.
+  are not rebuilt. Some equations can be omitted entirely by the layout
+  extraction. A successful run is not proof that every formula was preserved;
+  compare formula-heavy pages with the source PDF.
 - A superscript stacked over a subscript (`SO₄²⁻`) is sometimes split onto a
   separate line by the extraction, and ends up detached (`SO₄ ... 2−`).
 - With `--guess-glyphs`, unmapped glyphs the pre-pass cannot place are guessed

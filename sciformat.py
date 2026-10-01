@@ -278,7 +278,7 @@ _ELEMENT_RE = "|".join(sorted(ELEMENTS, key=len, reverse=True))
 _WORDLIKE_ELEMENTS = {"I", "In", "As", "At", "Be", "He", "No", "Am", "Es", "Ho", "Po", "Re", "Pa", "Ga", "Os"}
 
 
-def fix_unmapped_glyphs(text: str) -> str:
+def fix_unmapped_glyphs(text: str, scripts: str = "unicode") -> str:
     """Best guesses for U+FFFD glyphs the PDF pass could not place.
 
     Fonts without a Unicode mapping come out as "�". Where the context
@@ -287,7 +287,8 @@ def fix_unmapped_glyphs(text: str) -> str:
     "2H₂O" is the hydrate dot.
     """
     text = re.sub(r"(?<=\d)\s?<sup>�</sup>\s?(?=[CFK](?![A-Za-z]))", "°", text)
-    text = re.sub(r"(?<=[A-Za-z)\]])<sup>�</sup>", "⁻", text)
+    charge = "<sup>−</sup>" if scripts == "html" else "⁻"
+    text = re.sub(r"(?<=[A-Za-z)\]])<sup>�</sup>", charge, text)
     text = re.sub(r"(?<=[A-Za-z0-9₀-₉]) ?� ?(?=\d*\s?H₂O\b)", "·", text)
     # Between a number and a power of ten: "8.00�10⁻⁴" is 8.00 × 10⁻⁴.
     text = re.sub(rf"(?<=\d) ?� ?(?=10(?:[{SUP_CHARS}]|<sup>|[−-]\d))", " × ", text)
@@ -392,12 +393,13 @@ def postprocess(
     keep_figure_text: bool = False,
     fffd_guess: str | None = None,
     extra_accents: set[str] | None = None,
-    guess_glyphs: bool = True,
+    guess_glyphs: bool = False,
 ) -> str:
     """Run every clean-up in order.
 
-    fffd_guess replaces "�" glyphs nothing else could resolve; the PDF pass
-    supplies it when nearly all of a paper's unmapped glyphs were one symbol.
+    When guess_glyphs is enabled, fffd_guess replaces "�" glyphs nothing else
+    could resolve; the PDF pass supplies it when nearly all of a paper's
+    unmapped glyphs were one symbol. Guesses are disabled by default.
     """
     for lig, plain in _LIGATURES.items():
         text = text.replace(lig, plain)
@@ -409,7 +411,7 @@ def postprocess(
     text = fix_degrees(text)
     text = convert_scripts(text, "html")  # merge/trim tags before matching them
     if guess_glyphs:
-        text = fix_unmapped_glyphs(text)
+        text = fix_unmapped_glyphs(text, scripts="html")
     if guess_glyphs and fffd_guess:
         text = text.replace("�", fffd_guess)
     text = fix_numbers(text, scripts="html")

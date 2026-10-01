@@ -107,8 +107,9 @@ def resolve_item(zot, query: str) -> dict:
         item = zot.item(query)
         return item["data"] | {"key": query}
 
-    matches = zot.items(q=query, qmode="titleCreatorYear", itemType="-attachment")
-    matches = [m for m in matches if m["data"].get("itemType") != "note"]
+    matches = zot.everything(zot.items(q=query, qmode="titleCreatorYear",
+                                      itemType="-attachment", limit=PAGE_SIZE))
+    matches = [m for m in matches if m["data"].get("itemType") not in ("note", "annotation")]
     if not matches:
         sys.exit(f"No Zotero items matched: {query!r}")
     if len(matches) > 1:
@@ -230,6 +231,19 @@ def _authors(item: dict) -> list[str]:
     return names
 
 
+def zotero_select_link(item: dict) -> str | None:
+    """Link to an item in the configured personal or group library."""
+    if not item.get("key"):
+        return None
+    if ZOTERO_LIBRARY_TYPE == "group":
+        if not ZOTERO_LIBRARY_ID:
+            return None
+        library = f"groups/{ZOTERO_LIBRARY_ID}"
+    else:
+        library = "library"
+    return f"zotero://select/{library}/items/{item['key']}"
+
+
 def front_matter(item: dict, pdf: Path, pages: int) -> str:
     """YAML front matter with the item's bibliographic data.
 
@@ -249,7 +263,7 @@ def front_matter(item: dict, pdf: Path, pages: int) -> str:
         "url": item.get("url"),
         "item_type": item.get("itemType"),
         "zotero_key": item.get("key"),
-        "zotero_link": f"zotero://select/library/items/{item['key']}" if item.get("key") else None,
+        "zotero_link": zotero_select_link(item),
         "source_pdf": pdf.name,
         "pages": pages,
         "extracted": dt.date.today().isoformat(),
@@ -300,7 +314,7 @@ def write_markdown(pdf: Path, out_path: Path, item: dict, args) -> None:
             f"  warning: {len(result.textless_pages)} of {result.pages} pages have no "
             f"text layer (scanned?): {_ranges(result.textless_pages)}. OCR the PDF "
             "(e.g. with ocrmypdf) and rerun with --force to get their text."
-    )
+        )
 
     if result.unresolved_glyphs:
         print(
