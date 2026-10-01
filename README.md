@@ -211,6 +211,13 @@ lookup table doesn't work. `advent.py` decodes them from what does stay put:
 Accents drawn by these fonts are composed with the letter they sit on
 (`Ro_zej` → Rożej, `Hrub�y` → Hrubý).
 
+## Acknowledgments
+
+Developed with assistance from [OpenAI Codex](https://openai.com/codex/),
+including extraction improvements, scientific-formatting fixes, regression
+tests, and documentation. AI-assisted output should be checked against the
+source PDFs, especially for equations and ambiguous symbols.
+
 ## Limitations
 
 - Display equations come through only as well as pymupdf4llm reads them —
