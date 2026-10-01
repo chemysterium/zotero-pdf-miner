@@ -17,13 +17,31 @@ import zotero_pdf_miner as miner
 
 def export_args(**overrides):
     values = dict(max_minutes=None, force=False, dry_run=False,
-                  linked_attachment_base_dir=None, guess_glyphs=False,
+                  linked_attachment_base_dir=None, guess_glyphs=False, equations="warn",
                   scripts="unicode", keep_figure_text=False,
                   page_separators=False, no_front_matter=False)
     return SimpleNamespace(**(values | overrides))
 
 
 class CliTests(unittest.TestCase):
+    def test_writer_reports_formula_loss_recovery_and_plain_text_fallback(self):
+        result = extract.Result(
+            markdown="Scientific text\n", pages=3, edits_applied=0, edits_found=0,
+            metadata={}, textless_pages=[], ocr_layer_pages=[],
+            omitted_formulas=2, omitted_formula_pages=[2, 3], recovered_formulas=1,
+            text_fallback_pages=[1],
+        )
+        with tempfile.TemporaryDirectory(prefix="zotero-miner-test-") as folder, \
+                patch.object(extract, "pdf_to_markdown", return_value=result) as converter, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            miner.write_markdown(Path("sample.pdf"), Path(folder) / "sample.md", {},
+                                 export_args(equations="text"))
+            self.assertTrue((Path(folder) / "sample.md").is_file())
+        self.assertEqual(converter.call_args.kwargs["equation_mode"], "text")
+        self.assertIn("2 detected formula region(s) omitted on page(s) 2-3", output.getvalue())
+        self.assertIn("1 formula region(s) retained", output.getvalue())
+        self.assertIn("1 page(s) restored as plain text", output.getvalue())
+
     def run_cli(self, arguments):
         with patch.object(sys, "argv", ["zotero_pdf_miner.py", *arguments]), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
@@ -229,6 +247,62 @@ class FormattingPipelineTests(unittest.TestCase):
 
 
 class ExtractionTests(unittest.TestCase):
+    def test_plain_page_fallback_distinguishes_visible_text_from_ocr(self):
+        import pymupdf
+        import pymupdf4llm
+        import pdf_hints
+
+        for render_mode in (0, 3):
+            with self.subTest(render_mode=render_mode):
+                document = pymupdf.open()
+                page = document.new_page()
+                page.insert_textbox((72, 72, 520, 600), "Scientific text " * 30,
+                                    fontsize=11, render_mode=render_mode)
+                chunks = [{"text": "", "page_boxes": [{"class": "formula", "pos": (0, 0)}]}]
+                with patch.object(pymupdf, "open", return_value=document), \
+                        patch.object(pymupdf4llm, "to_markdown", return_value=chunks), \
+                        patch.object(pdf_hints, "collect_hints", return_value=pdf_hints.PdfHints()):
+                    result = extract.pdf_to_markdown(Path("memory.pdf"), equation_mode="text")
+                self.assertIn("Scientific text", result.markdown)
+                self.assertEqual(result.ocr_layer_pages, [1] if render_mode == 3 else [])
+                self.assertEqual(result.text_fallback_pages, [1] if render_mode == 0 else [])
+                self.assertEqual(result.recovered_formulas, 0)  # No duplicated recovery.
+
+    def test_invalid_equation_mode_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "equation_mode"):
+            extract.pdf_to_markdown(Path("missing.pdf"), equation_mode="guess")
+
+    def test_omitted_formulas_are_reported_and_recovery_is_explicit(self):
+        import pymupdf
+        import pymupdf4llm
+        import pdf_hints
+        import equations
+
+        for mode in ("warn", "text"):
+            with self.subTest(mode=mode):
+                document = pymupdf.open()
+                document.new_page()
+                before = "Scientific text " * 20
+                text = before + "\n\nAfter the equation."
+                chunks = [{"text": text, "page_boxes": [{"class": "formula",
+                           "pos": (len(before), len(before) + 2), "bbox": (0, 0, 100, 20)}]}]
+                with patch.object(pymupdf, "open", return_value=document), \
+                        patch.object(pymupdf4llm, "to_markdown", return_value=chunks), \
+                        patch.object(pdf_hints, "collect_hints", return_value=pdf_hints.PdfHints()), \
+                        patch.object(equations, "formula_text", return_value="x^2 = \u00bc + \x01"):
+                    result = extract.pdf_to_markdown(Path("memory.pdf"), equation_mode=mode)
+                if mode == "warn":
+                    self.assertEqual(result.omitted_formulas, 1)
+                    self.assertEqual(result.omitted_formula_pages, [1])
+                    self.assertEqual(result.recovered_formulas, 0)
+                else:
+                    self.assertEqual(result.omitted_formulas, 0)
+                    self.assertEqual(result.recovered_formulas, 1)
+                    self.assertIn("x^2 = \u00bc + \ufffd", result.markdown)
+                    self.assertIn("original layout is not reconstructed", result.markdown)
+                    self.assertEqual(result.unresolved_glyphs, 1)
+                    self.assertNotIn("ZOTEROPDFFORMULA", result.markdown)
+
     def test_unknown_control_and_private_glyphs_are_visible_and_counted(self):
         import pymupdf
         import pymupdf4llm

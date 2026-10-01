@@ -100,6 +100,7 @@ interrupted run didn't reach.
 | `--dry-run` | Show what would be extracted |
 | `--linked-attachment-base-dir DIR` | Base folder for relative linked attachments (`attachments:...`) |
 | `--guess-glyphs` | Enable heuristic replacements of unresolved symbols (off by default) |
+| `--equations warn\|text` | Warn about omitted formula regions (default), or retain marked text-layer excerpts |
 | `--max-minutes N`, `-m N` | Stop starting new papers after N minutes |
 | `--scripts unicode\|html` | Sub/superscripts as Unicode (`10⁻³`, falling back to `<sup>` where Unicode has no glyph) or always as `<sub>`/`<sup>` |
 | `--keep-figure-text` | Keep text found inside figures (axis labels, legends) |
@@ -112,6 +113,33 @@ paragraphs — OCR has no sub/superscripts to keep), and the run says so.
 Scanned PDFs without such a layer have no text to extract. The miner says so, naming the pages
 without a text layer; OCR them first (for example with `ocrmypdf`, or with
 [sum-ocr-mark](https://github.com/chemysterium/sum-ocr-mark)) and rerun with `--force`.
+
+### Display equations
+
+The layout converter can detect a formula box but emit no Markdown for it.
+The default `--equations warn` reports the number of omitted regions and their
+page numbers. To retain text from those regions at their original positions:
+
+```
+python zotero_pdf_miner.py --local -c "Thesis Reading" --equations text --force
+python zotero_pdf_miner.py --pdf paper.pdf --equations text
+```
+
+Each recovered region is clearly labelled and placed in a literal `text` block.
+These are **approximate text-layer excerpts, not reconstructed equations**:
+stacked fractions, reading order, arrows and detached scripts can still be
+damaged. Known fonts and baseline scripts are decoded, but prose cleanup and
+context guesses are not applied inside these excerpts. Unicode scripts are
+used where available; otherwise literal `<sub>`/`<sup>` notation is retained,
+regardless of the prose `--scripts` mode. Image-only equations cannot be restored
+this way. Compare important formulas with the PDF; this option is not LaTeX
+conversion, OCR, or a completeness guarantee. Detection depends on the layout
+converter providing formula-region metadata; misclassified regions may remain
+undetected or be reported as formulas.
+
+If layout extraction returns almost no text from a text-bearing page, its full
+text layer is used as a plain-text fallback. Visible-text fallbacks are reported
+separately from invisible OCR layers, since their formatting may have been lost.
 
 ## How it works
 
@@ -136,7 +164,7 @@ Three passes per PDF:
    ligatures, µ → μ, spacing around scripts and punctuation, compound-word
    hyphens lost to line-end dehyphenation, and figure-internal text.
 
-`python -m unittest -v` runs the formatting, CLI and extraction tests.
+`python -m unittest -v` runs the formatting, CLI, extraction and equation tests.
 
 Relative linked attachments use Zotero's **Linked Attachment Base Directory**,
 not its storage folder. Set `zotero_linked_attachment_base_dir` in `config.ini`
@@ -188,8 +216,10 @@ Accents drawn by these fonts are composed with the letter they sit on
 - Display equations come through only as well as pymupdf4llm reads them —
   inline chemistry and units are handled, typeset integrals and fractions
   are not rebuilt. Some equations can be omitted entirely by the layout
-  extraction. A successful run is not proof that every formula was preserved;
-  compare formula-heavy pages with the source PDF.
+  extraction. Omitted detected regions produce warnings; `--equations text`
+  retains approximate excerpts where a text layer exists. A successful run is
+  not proof that every formula was preserved; compare formula-heavy pages with
+  the source PDF.
 - A superscript stacked over a subscript (`SO₄²⁻`) is sometimes split onto a
   separate line by the extraction, and ends up detached (`SO₄ ... 2−`).
 - With `--guess-glyphs`, unmapped glyphs the pre-pass cannot place are guessed

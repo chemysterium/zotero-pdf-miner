@@ -292,6 +292,7 @@ def write_markdown(pdf: Path, out_path: Path, item: dict, args) -> None:
         keep_figure_text=args.keep_figure_text,
         page_separators=args.page_separators,
         guess_glyphs=args.guess_glyphs,
+        equation_mode=args.equations,
     )
     text = result.markdown
     if not args.no_front_matter:
@@ -315,11 +316,29 @@ def write_markdown(pdf: Path, out_path: Path, item: dict, args) -> None:
             f"text layer (scanned?): {_ranges(result.textless_pages)}. OCR the PDF "
             "(e.g. with ocrmypdf) and rerun with --force to get their text."
         )
+    if result.text_fallback_pages:
+        print(
+            f"  warning: {len(result.text_fallback_pages)} page(s) restored as plain text "
+            f"({_ranges(result.text_fallback_pages)}) because layout extraction returned "
+            "too little text; tables and formula layout may be lost. Check the PDF."
+        )
 
     if result.unresolved_glyphs:
         print(
             f"  warning: {result.unresolved_glyphs} unresolved glyph(s) remain. "
             "Check their context against the PDF; --guess-glyphs enables heuristic replacements."
+        )
+    if result.omitted_formulas:
+        print(
+            f"  warning: {result.omitted_formulas} detected formula region(s) omitted "
+            f"on page(s) {_ranges(result.omitted_formula_pages)}. "
+            "Use --equations text to retain approximate text-layer excerpts; "
+            "image-only formulas need OCR or manual transcription."
+        )
+    if result.recovered_formulas:
+        print(
+            f"  note: {result.recovered_formulas} formula region(s) retained as marked "
+            "text-layer excerpts, not reconstructed equations. Check them against the PDF."
         )
 
 
@@ -410,6 +429,9 @@ def main() -> None:
                         help="Base folder for Zotero's relative linked attachments")
     parser.add_argument("--guess-glyphs", action="store_true",
                         help="Guess unresolved symbols from context (off by default)")
+    parser.add_argument("--equations", choices=["warn", "text"], default="warn",
+                        help="Warn about omitted layout formulas (default), or retain "
+                        "marked text-layer excerpts with approximate layout")
     parser.add_argument("--max-minutes", "-m", type=float, metavar="N",
                         help="Stop starting new papers after N minutes")
     parser.add_argument("--scripts", choices=["unicode", "html"], default="unicode",
