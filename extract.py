@@ -38,6 +38,7 @@ class Result:
     metadata: dict
     textless_pages: list[int]  # 1-based pages with no text layer (scans)
     ocr_layer_pages: list[int]  # 1-based pages read from an invisible OCR layer
+    unresolved_glyphs: int = 0
 
 
 def pdf_to_markdown(
@@ -45,6 +46,7 @@ def pdf_to_markdown(
     scripts: str = "unicode",
     keep_figure_text: bool = False,
     page_separators: bool = False,
+    guess_glyphs: bool = False,
 ) -> Result:
     import pymupdf
     import pymupdf4llm
@@ -102,6 +104,7 @@ def pdf_to_markdown(
         scripts=scripts,
         keep_figure_text=keep_figure_text,
         fffd_guess=hints.fffd_guess(),
+        guess_glyphs=guess_glyphs,
     )
     if len(body.strip()) < MIN_USEFUL_CHARS:
         raise ExtractionError(
@@ -118,6 +121,7 @@ def pdf_to_markdown(
         metadata=metadata,
         textless_pages=hints.textless_pages,
         ocr_layer_pages=sorted(n + 1 for n in ocr_layer),
+        unresolved_glyphs=body.count("\ufffd"),
     )
 
 

@@ -45,8 +45,9 @@ copy `config.example.ini` to `config.ini` and fill in `zotero_library_id` and
 enough). Every setting can also be given as an environment variable of the same
 name in upper case (`ZOTERO_API_KEY`, `OUTPUT_DIR`, ...).
 
-The PDFs themselves are always read from local storage (`~/Zotero/storage` by
-default; set `zotero_storage_dir` if yours is elsewhere).
+The PDFs themselves are always read from this computer. Stored attachments use
+`~/Zotero/storage` by default (set `zotero_storage_dir` if yours is elsewhere);
+linked attachments use their absolute path or the configured linked-file base.
 
 ## Usage
 
@@ -81,6 +82,8 @@ A PDF that isn't in Zotero:
 python zotero_pdf_miner.py --pdf paper.pdf
 ```
 
+This writes `paper.md` beside the PDF unless you choose a folder with `-o`.
+
 Files are named `<title> (<item key>).md`. Papers that already have a file are
 skipped, so rerunning a command only picks up what is new — or what an
 interrupted run didn't reach.
@@ -95,6 +98,8 @@ interrupted run didn't reach.
 | `--output-dir`, `-o` | Output folder (default `markdown/`, plus the collection name) |
 | `--force` | Overwrite existing `.md` files |
 | `--dry-run` | Show what would be extracted |
+| `--linked-attachment-base-dir DIR` | Base folder for relative linked attachments (`attachments:...`) |
+| `--guess-glyphs` | Enable heuristic replacements of unresolved symbols (off by default) |
 | `--max-minutes N`, `-m N` | Stop starting new papers after N minutes |
 | `--scripts unicode\|html` | Sub/superscripts as Unicode (`10⁻³`, falling back to `<sup>` where Unicode has no glyph) or always as `<sub>`/`<sup>` |
 | `--keep-figure-text` | Keep text found inside figures (axis labels, legends) |
@@ -131,7 +136,18 @@ Three passes per PDF:
    ligatures, µ → μ, spacing around scripts and punctuation, compound-word
    hyphens lost to line-end dehyphenation, and figure-internal text.
 
-`python -m unittest -v` runs the tests for the text rules.
+`python -m unittest -v` runs the formatting, CLI and extraction tests.
+
+Relative linked attachments use Zotero's **Linked Attachment Base Directory**,
+not its storage folder. Set `zotero_linked_attachment_base_dir` in `config.ini`
+(or `ZOTERO_LINKED_ATTACHMENT_BASE_DIR`) or pass `--linked-attachment-base-dir`.
+
+Exports warn when unresolved replacement characters remain, including their count.
+Heuristic symbol guesses are disabled by default; use `--guess-glyphs` to enable
+them and check the result against the PDF. Font and glyph-position based repairs
+remain enabled. Batch runs return exit code 1 when extraction or attachment
+lookup fails; items without PDF attachments are ordinary skips in batch runs.
+An explicitly requested single Zotero item without a PDF returns exit code 1.
 
 ### Fonts without a Unicode mapping
 
@@ -164,6 +180,6 @@ Accents drawn by these fonts are composed with the letter they sit on
   are not rebuilt.
 - A superscript stacked over a subscript (`SO₄²⁻`) is sometimes split onto a
   separate line by the extraction, and ends up detached (`SO₄ ... 2−`).
-- Unmapped glyphs the pre-pass cannot place are guessed from context, or left
-  as `�` where there is no safe guess. Rare Pi fonts (a few papers each) are
+- With `--guess-glyphs`, unmapped glyphs the pre-pass cannot place are guessed
+  from context, or left as `�` where there is no safe guess. Rare Pi fonts are
   not in the tables yet; their Greek letters stay Latin (`m` for μ).

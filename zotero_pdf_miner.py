@@ -59,6 +59,7 @@ ZOTERO_STORAGE_DIR = _setting(
     "zotero", "zotero_storage_dir", str(Path.home() / "Zotero" / "storage")
 )
 OUTPUT_DIR = _setting("output", "output_dir", "markdown")
+ZOTERO_LINKED_ATTACHMENT_BASE_DIR = _setting("zotero", "zotero_linked_attachment_base_dir")
 
 ITEM_KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
 LOCAL_API = "http://localhost:23119/api"
@@ -149,7 +150,8 @@ def get_collection_papers(zot, collection_key: str, recursive: bool = False) -> 
     papers = _papers(zot.everything(zot.collection_items_top(collection_key, limit=PAGE_SIZE)))
     if recursive:
         seen = {p["key"] for p in papers}
-        for child in zot.collections_sub(collection_key):
+        children = zot.everything(zot.collections_sub(collection_key, limit=PAGE_SIZE))
+        for child in children:
             for paper in get_collection_papers(zot, child["key"], recursive=True):
                 if paper["key"] not in seen:
                     seen.add(paper["key"])
@@ -162,14 +164,14 @@ def get_all_papers(zot) -> list[dict]:
 
 
 def find_pdf_attachment(zot, parent_key: str) -> dict:
-    for child in zot.children(parent_key):
+    for child in zot.everything(zot.children(parent_key, limit=PAGE_SIZE)):
         data = child["data"]
         if data.get("itemType") == "attachment" and data.get("contentType") == "application/pdf":
             return data | {"key": child["key"]}
     raise ProcessingError("no PDF attachment")
 
 
-def local_pdf_path(attachment: dict) -> Path:
+def local_pdf_path(attachment: dict, linked_base_dir: Path | None = None) -> Path:
     """Where the attachment's PDF lives on disk.
 
     Stored files sit in <storage>/<attachment key>/<filename>; linked files
@@ -178,8 +180,17 @@ def local_pdf_path(attachment: dict) -> Path:
     """
     if attachment.get("linkMode") == "linked_file":
         raw = attachment.get("path", "")
+        if not raw:
+            raise ProcessingError("Linked PDF has no file path.")
         if raw.startswith("attachments:"):
-            path = Path(ZOTERO_STORAGE_DIR).parent / raw[len("attachments:"):]
+            base = linked_base_dir or ZOTERO_LINKED_ATTACHMENT_BASE_DIR
+            if not base:
+                raise ProcessingError(
+                    "Relative linked PDF needs --linked-attachment-base-dir or "
+                    "zotero_linked_attachment_base_dir in config.ini. Use Zotero's "
+                    "Linked Attachment Base Directory setting."
+                )
+            path = Path(base).expanduser() / raw[len("attachments:"):]
         else:
             path = Path(raw)
     else:
@@ -266,6 +277,7 @@ def write_markdown(pdf: Path, out_path: Path, item: dict, args) -> None:
         scripts=args.scripts,
         keep_figure_text=args.keep_figure_text,
         page_separators=args.page_separators,
+        guess_glyphs=args.guess_glyphs,
     )
     text = result.markdown
     if not args.no_front_matter:
@@ -288,6 +300,12 @@ def write_markdown(pdf: Path, out_path: Path, item: dict, args) -> None:
             f"  warning: {len(result.textless_pages)} of {result.pages} pages have no "
             f"text layer (scanned?): {_ranges(result.textless_pages)}. OCR the PDF "
             "(e.g. with ocrmypdf) and rerun with --force to get their text."
+    )
+
+    if result.unresolved_glyphs:
+        print(
+            f"  warning: {result.unresolved_glyphs} unresolved glyph(s) remain. "
+            "Check their context against the PDF; --guess-glyphs enables heuristic replacements."
         )
 
 
@@ -307,7 +325,9 @@ def _ranges(pages: list[int]) -> str:
 # Runs
 # --------------------------------------------------------------------------
 
-def process_papers(zot, papers: list[dict], out_dir: Path, args) -> int:
+def process_papers(
+    zot, papers: list[dict], out_dir: Path, args, *, missing_pdf_is_error: bool = False
+) -> int:
     """Extract every paper; returns the number of failures."""
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
     done = skipped = no_pdf = failed = 0
@@ -332,8 +352,12 @@ def process_papers(zot, papers: list[dict], out_dir: Path, args) -> int:
             print("  no PDF attachment, skipping")
             no_pdf += 1
             continue
+        except Exception as exc:
+            print(f"  failed to list attachments: {exc}")
+            failed += 1
+            continue
         try:
-            pdf = local_pdf_path(attachment)
+            pdf = local_pdf_path(attachment, args.linked_attachment_base_dir)
             if args.dry_run:
                 print(f"  would extract {pdf.name} -> {out_path.name}")
             else:
@@ -348,7 +372,7 @@ def process_papers(zot, papers: list[dict], out_dir: Path, args) -> int:
         f"Done. {done} {verb}, {skipped} already there, {no_pdf} without a PDF, "
         f"{failed} failed. Output: {out_dir}"
     )
-    return failed + no_pdf
+    return failed + (no_pdf if missing_pdf_is_error else 0)
 
 
 def main() -> None:
@@ -368,6 +392,10 @@ def main() -> None:
                         "with --collection, a subfolder named after it)")
     parser.add_argument("--force", action="store_true", help="Overwrite existing .md files")
     parser.add_argument("--dry-run", action="store_true", help="List what would be extracted")
+    parser.add_argument("--linked-attachment-base-dir", type=Path,
+                        help="Base folder for Zotero's relative linked attachments")
+    parser.add_argument("--guess-glyphs", action="store_true",
+                        help="Guess unresolved symbols from context (off by default)")
     parser.add_argument("--max-minutes", "-m", type=float, metavar="N",
                         help="Stop starting new papers after N minutes")
     parser.add_argument("--scripts", choices=["unicode", "html"], default="unicode",
@@ -396,8 +424,14 @@ def main() -> None:
         out_path = (args.output_dir or args.pdf.parent) / f"{args.pdf.stem}.md"
         if out_path.exists() and not args.force:
             sys.exit(f"{out_path} exists (use --force to overwrite).")
+        if args.dry_run:
+            print(f"Would extract {args.pdf} -> {out_path}")
+            return
         item = {"title": args.pdf.stem}
-        write_markdown(args.pdf, out_path, item, args)
+        try:
+            write_markdown(args.pdf, out_path, item, args)
+        except Exception as exc:
+            sys.exit(f"Failed to extract {args.pdf}: {exc}")
         return
 
     zot = build_client(args.local)
@@ -418,8 +452,8 @@ def main() -> None:
         print(f"Found: {paper.get('title', 'Untitled')} ({paper['key']})")
         papers = [paper]
 
-    failed = process_papers(zot, papers, out_dir, args)
-    sys.exit(1 if failed and len(papers) == 1 else 0)
+    failed = process_papers(zot, papers, out_dir, args, missing_pdf_is_error=bool(args.item))
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

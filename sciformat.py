@@ -296,7 +296,7 @@ def fix_unmapped_glyphs(text: str) -> str:
     return text
 
 
-def fix_numbers(text: str) -> str:
+def fix_numbers(text: str, scripts: str = "unicode") -> str:
     # "8.102× 10⁻³" / "8.102 x10⁻³" -> "8.102 × 10⁻³"
     # A typographic minus after the 10 ("x 10−3") also marks an exponent; a
     # hyphen doesn't ("2 x 10-15 min" is a range).
@@ -304,7 +304,10 @@ def fix_numbers(text: str) -> str:
     # Exponent that lost its raising: "1.5 × 10−3" -> "1.5 × 10⁻³"
     text = re.sub(
         r"(\d) × 10([−-])(\d{1,3})(?![\d.,])",
-        lambda m: f"{m.group(1)} × 10⁻" + "".join(SUPERSCRIPTS[d] for d in m.group(3)),
+        lambda m: f"{m.group(1)} × 10" + (
+            f"<sup>−{m.group(3)}</sup>" if scripts == "html"
+            else "⁻" + "".join(SUPERSCRIPTS[d] for d in m.group(3))
+        ),
         text,
     )
     # Isotopes: "⁶ Li" -> "⁶Li", only where the superscript starts a word
@@ -318,6 +321,10 @@ def fix_numbers(text: str) -> str:
 
     text = re.sub(
         rf"(?:^|(?<=[\s(\[/]))([⁰¹²³⁴⁵⁶⁷⁸⁹]+) ({_ELEMENT_RE})(?![a-z])",
+        join_isotope, text, flags=re.MULTILINE,
+    )
+    text = re.sub(
+        rf"(?:^|(?<=[\s(\[/]))(<sup>\d+</sup>) ({_ELEMENT_RE})(?![a-z])",
         join_isotope, text, flags=re.MULTILINE,
     )
     # Micro sign (U+00B5) -> Greek mu (U+03BC), so "µm" and "μm" search alike.
@@ -385,6 +392,7 @@ def postprocess(
     keep_figure_text: bool = False,
     fffd_guess: str | None = None,
     extra_accents: set[str] | None = None,
+    guess_glyphs: bool = True,
 ) -> str:
     """Run every clean-up in order.
 
@@ -400,11 +408,12 @@ def postprocess(
         text = fix_moved_accents(text, accent_words, extra_accents)
     text = fix_degrees(text)
     text = convert_scripts(text, "html")  # merge/trim tags before matching them
-    text = fix_unmapped_glyphs(text)
-    if fffd_guess:
+    if guess_glyphs:
+        text = fix_unmapped_glyphs(text)
+    if guess_glyphs and fffd_guess:
         text = text.replace("�", fffd_guess)
+    text = fix_numbers(text, scripts="html")
     text = convert_scripts(text, scripts)
-    text = fix_numbers(text)
     text = restore_hyphens(text)
     text = fix_spacing(text)
     return unicodedata.normalize("NFC", text)
